@@ -1,0 +1,941 @@
+---
+title: "Visor geográfico del SLEP Maule Costa"
+subtitle: "Establecimientos del SLEP Maule Costa"
+author: "Alonso Cotal"
+date: 2026-11-24
+lang: es
+date-format: long
+format:
+  html:
+    # default en vez de flatly: Flatly impone Lato y el verde #18BC9C, ajenos a
+    # la paleta. Los enlaces y el foco se definen en assets/visor.css.
+    theme: default
+    css: assets/visor.css
+    toc: false
+    embed-resources: true
+    code-tools: false
+    title-block-style: none
+    grid:
+      sidebar-width: 0px
+      margin-width: 0px
+      body-width: 1120px
+execute:
+  echo: false
+  warning: false
+  message: false
+---
+
+```{r}
+#| label: setup
+#| include: false
+
+library(readxl)
+library(tidyverse)
+library(leaflet)
+library(htmltools)
+library(htmlwidgets)
+library(scales)
+```
+
+```{r}
+#| label: importar-datos
+#| include: false
+
+# La base la construyen, en este orden, los dos scripts de 2_Process/:
+#   00_extraer_fuentes.py   lee las fuentes crudas de 1_Input/fuentes/ y agrega por RBD
+#   01_consolidar_base.py   une todo a la base de establecimientos
+ruta <- "3_Output/datos/base_consolidada.xlsx"
+
+if (!file.exists(ruta)) {
+  stop("No existe ", ruta, ".\n",
+       "Correr antes:  python 2_Process/00_extraer_fuentes.py\n",
+       "               python 2_Process/01_consolidar_base.py")
+}
+
+datos <- read_excel(ruta, sheet = "Establecimientos")
+
+# Validación por nombre de columna, no por posición: así reordenar la base
+# en Excel no desplaza los datos en silencio.
+requeridas <- c(
+  "rbd", "establecimiento", "comuna", "lat", "lon", "ruralidad",
+  "niveles_oficiales", "tipo_ensenanza_ivm", "cursos_simples", "cursos_combinados",
+  "matricula", "mat_parvularia", "mat_basica", "mat_especial",
+  "mat_media_hc", "mat_media_tp", "mat_ninos_jovenes",
+  "mat_adultos", "mat_basica_adultos", "mat_media_hc_adultos",
+  "mat_media_tp_adultos", "niveles_adultos", "solo_adultos",
+  "mat_hombres", "mat_mujeres",
+  "mat_extranjeros", "ive", "ive_prioridad_a", "ive_prioridad_b", "ive_prioridad_c",
+  "ivm_parv", "ivm_c1", "ivm_c2", "ivm_media",
+  "tasa_asistencia", "pct_ausentismo_cronico", "pct_asistencia_esperada",
+  "tasa_aprobacion", "tasa_reprobacion", "tasa_retiro", "promedio_general",
+  "n_matricula_rendimiento", "n_base_rendimiento", "n_trasladados",
+  "desv_anio", "desv_global_tasa", "desv_global_n", "desv_global_mat_teorica",
+  "desv_regular_tasa", "desv_regular_n", "desv_regular_mat_teorica",
+  "prom_lect_4b"
+)
+faltan <- setdiff(requeridas, names(datos))
+if (length(faltan) > 0) {
+  stop("La base consolidada no trae estas columnas: ", paste(faltan, collapse = ", "),
+       "\nRevisar 2_Process/01_consolidar_base.py")
+}
+
+# solo_adultos puede llegar como logico o como texto segun el motor de Excel
+datos <- datos |>
+  mutate(solo_adultos = toupper(trimws(as.character(solo_adultos))) %in%
+                        c("TRUE", "VERDADERO", "1"))
+
+sin_coord  <- datos |> filter(is.na(lat) | is.na(lon))
+datos_mapa <- datos |> filter(!is.na(lat), !is.na(lon))
+n_excl     <- nrow(sin_coord)
+```
+
+```{r}
+#| label: control-calidad
+#| include: false
+
+# Control interno: no se imprime en el documento final
+tibble(
+  total_base = nrow(datos),
+  excluidos  = n_excl,
+  en_mapa    = nrow(datos_mapa)
+)
+
+# El rango de coordenadas debe corresponder a la costa del Maule
+datos_mapa |> summarise(across(c(lat, lon), list(min = min, max = max)))
+
+# Cobertura de cada indicador sobre los establecimientos del mapa
+datos_mapa |>
+  summarise(across(
+    c(matricula, ive, ivm_c1, tasa_asistencia, tasa_aprobacion, prom_lect_4b),
+    ~ sum(!is.na(.x))
+  ))
+
+# Registros excluidos por falta de coordenadas
+sin_coord |> select(establecimiento, comuna)
+```
+
+```{r}
+#| label: formato
+#| include: false
+
+# ---- Formato de números ------------------------------------------------------
+# Las tres funciones devuelven NA cuando el dato falta, para que el texto de
+# ausencia lo ponga una sola función (ov) y nunca aparezca un "NA" impreso.
+
+f1 <- function(x) {                                  # un decimal, coma decimal
+  x <- suppressWarnings(as.numeric(x))
+  out <- number(x, accuracy = 0.1, decimal.mark = ",", big.mark = ".")
+  out[is.na(x)] <- NA_character_
+  out
+}
+
+f0 <- function(x) {                                  # entero con punto de miles
+  x <- suppressWarnings(as.numeric(x))
+  # decimal.mark explícito: con big.mark "." y decimal.mark "." prettyNum avisa
+  out <- number(x, accuracy = 1, big.mark = ".", decimal.mark = ",")
+  out[is.na(x)] <- NA_character_
+  out
+}
+
+fp <- function(x) {                                  # porcentaje
+  v <- f1(x)
+  ifelse(is.na(v), NA_character_, paste0(v, "%"))
+}
+
+# Ancho para CSS: necesita punto decimal, no coma
+pc <- function(x) sprintf("%.1f", pmin(pmax(as.numeric(x), 0), 100))
+
+# ---- Ciclos y niveles --------------------------------------------------------
+# Ciclos del IVM, tal como los nombra la base
+CICLOS_IVM <- c("Parvularia" = "parv", "1º Ciclo Básico" = "c1",
+                "2º Ciclo Básico" = "c2", "Enseñanza Media" = "media")
+
+# Niveles del registro oficial de matrícula, régimen regular
+NIVELES_OF <- c("Parvularia", "Básica", "Media H-C", "Media T-P")
+
+# La modalidad de adultos solo existe en estos tres niveles (MAT_ENS_3, 6 y 8)
+NIVELES_AD <- c("Básica", "Media H-C", "Media T-P")
+
+# Grados con SIMCE 2025
+GRADOS_SIMCE <- c("4b" = "4º básico", "8b" = "8º básico", "2m" = "2º medio")
+
+# Razón por la que la Agencia de Calidad no publica un puntaje
+MARCAS_SIMCE <- c(
+  "1" = "Sin puntaje publicado: 6 o menos estudiantes evaluados.",
+  "2" = "Puntaje no publicado: los resultados no son representativos del desempeño, por causas ajenas a la Agencia.",
+  "3" = "Puntaje no publicado: los resultados no son representativos del desempeño, por causas ajenas al establecimiento.",
+  "4" = "La aplicación de la prueba extendida no permite evaluar esta asignatura."
+)
+```
+
+```{r}
+#| label: preparar-mapa
+#| include: false
+
+niveles <- c("Rural", "Urbano", "Sin información")
+colores <- c(
+  "Rural" = "#D55E00",
+  "Urbano" = "#0072B2",
+  "Sin información" = "#7F7F7F"
+)
+
+# ---- Tamaño del punto -------------------------------------------------------
+# El tamaño codifica tramos de matrícula, no área proporcional. Razón: la
+# matrícula va de 0 a 1.067 (1.067:1). Con área proporcional el punto del
+# establecimiento más chico mediría 0,46 px, y con un piso de visibilidad de
+# 4 px el 53% de los establecimientos quedaría del mismo tamaño — justo las
+# escuelas rurales chicas. Los tramos declaran qué significa cada tamaño.
+# Los conteos del comentario son los medidos al 24 de noviembre de 2026;
+# tests/verificar_logica.py avisa si la base los deja desactualizados.
+TRAMOS <- tribble(
+  ~desde, ~hasta, ~etiqueta,   ~radio,   # establecimientos
+       0,     25, "Hasta 25",     4.0,   # 30
+      26,     75, "26 – 75",      6.0,   #  8
+      76,    200, "76 – 200",     8.5,   #  9
+     201,    500, "201 – 500",   11.5,   # 18
+     501,    Inf, "501 o más",   15.0    #  7
+)
+RADIO_SIN_DATO <- 3   # no se usa hoy: los 72 del mapa tienen matrícula
+
+# Tramo al que pertenece una matrícula. `which()[1]` toma el primero porque los
+# tramos no se solapan; el chunk control-radio lo verifica.
+radio_de_tramo <- function(m) {
+  if (is.na(m)) return(RADIO_SIN_DATO)
+  TRAMOS$radio[which(m >= TRAMOS$desde & m <= TRAMOS$hasta)[1]]
+}
+etiqueta_de_tramo <- function(m) {
+  if (is.na(m)) return(NA_character_)
+  TRAMOS$etiqueta[which(m >= TRAMOS$desde & m <= TRAMOS$hasta)[1]]
+}
+
+na_html <- "<span class='sin-info'>Sin información</span>"
+pend    <- "<span class='pendiente'>Próximamente</span>"
+
+# Valor o texto de ausencia de información, protegido para HTML
+val <- function(x) {
+  ifelse(is.na(x) | x == "", na_html, htmlEscape(as.character(x)))
+}
+
+# Igual que val(), pero para texto que ya trae HTML armado
+ov <- function(x) {
+  if (length(x) != 1 || is.na(x) || identical(as.character(x), "")) na_html else as.character(x)
+}
+
+# Lectura segura de un campo de la fila
+cmp <- function(e, nombre) {
+  v <- e[[nombre]]
+  if (is.null(v) || length(v) == 0) NA else v[[1]]
+}
+
+# ---- Piezas de la ficha ------------------------------------------------------
+
+fila <- function(etiqueta, valor, nota = NULL, clase = NULL) {
+  paste0(
+    "<div class='fila'><dt>", etiqueta,
+    if (!is.null(nota)) paste0("<small>", nota, "</small>"),
+    "</dt><dd", if (!is.null(clase)) paste0(" class='", clase, "'"), ">",
+    valor, "</dd></div>"
+  )
+}
+
+seccion <- function(titulo, ...) {
+  paste0("<section class='ficha-sec'><h3>", titulo, "</h3>",
+         paste0(..., collapse = ""), "</section>")
+}
+
+bloque <- function(etiqueta, ...) {
+  paste0("<div class='fila-bloque'><div class='et'>", etiqueta, "</div>",
+         paste0(..., collapse = ""), "</div>")
+}
+
+condicion_html <- function(ruralidad, color) {
+  if (is.na(ruralidad) || ruralidad == "") return(na_html)
+  paste0("<span class='cond' style='--c:", color, "'><i></i>",
+         htmlEscape(ruralidad), "</span>")
+}
+
+# Valor secundario, en gris y más chico, junto al principal
+menor <- function(txt) paste0(" <span class='menor'>", txt, "</span>")
+
+# Conteo con su porcentaje sobre el total
+parte_de <- function(parte, total) {
+  if (is.na(parte) || is.na(total) || total == 0) return(na_html)
+  paste0(f0(parte), menor(paste0("(", fp(parte / total * 100), ")")))
+}
+
+# Niveles que imparte: se encienden los que tiene, atenuados los que no
+chips_niveles <- function(txt, niveles = NIVELES_OF,
+                          vacio = "No imparte ningún nivel a niños y jóvenes",
+                          apagado = "no imparte este nivel") {
+  if (is.na(txt) || txt == "") {
+    return(paste0("<p class='ficha-aviso'>", vacio, "</p>"))
+  }
+  items <- str_trim(str_split(txt, ";")[[1]])
+  items <- items[items != ""]
+  universo <- unique(c(niveles, items))
+  chips <- map_chr(universo, function(n) {
+    if (n %in% items) {
+      paste0("<span class='nivel on'>", htmlEscape(n), "</span>")
+    } else {
+      paste0("<span class='nivel off'>", htmlEscape(n),
+             "<span class='visually-hidden'> (", apagado, ")</span></span>")
+    }
+  })
+  paste0("<div class='niveles'>", paste(chips, collapse = ""), "</div>")
+}
+
+# IVM solo de los ciclos que el establecimiento ofrece. Solo el valor: la
+# categoría (bajo, medio, alto) queda en la base pero no se muestra.
+filas_ivm <- function(e) {
+  tipo <- cmp(e, "tipo_ensenanza_ivm")
+  etq_ivm <- "Índice de Vulnerabilidad Multidimensional (IVM)"
+  if (is.na(tipo) || tipo == "") return(fila(etq_ivm, na_html))
+  items <- str_trim(str_split(tipo, ";")[[1]])
+  items <- items[items %in% names(CICLOS_IVM)]
+  if (length(items) == 0) return(fila(etq_ivm, na_html))
+  map_chr(items, function(n) {
+    suf <- CICLOS_IVM[[n]]
+    valor <- cmp(e, paste0("ivm_", suf))
+    fila(htmlEscape(n), ov(f1(valor)))
+  }) |> paste(collapse = "")
+}
+
+# Matrícula por nivel: solo los niveles con alumnos.
+# MINEDUC cuenta la educación de adultos en columnas aparte (MAT_ENS_3, 6 y 8),
+# así que acá nunca se suma a su nivel regular: un liceo con dos adultos
+# nivelando básica no imparte básica.
+filas_nivel <- function(e, pares, etq_vacia) {
+  out <- map_chr(pares, function(p) {
+    v <- cmp(e, p[2])
+    if (is.na(v) || v <= 0) "" else fila(p[1], f0(v))
+  })
+  out <- out[out != ""]
+  if (length(out) == 0) return(fila(etq_vacia, na_html))
+  paste(out, collapse = "")
+}
+
+filas_matricula <- function(e) {
+  filas_nivel(e, list(
+    c("Parvularia", "mat_parvularia"), c("Básica", "mat_basica"),
+    c("Especial", "mat_especial"), c("Media H-C", "mat_media_hc"),
+    c("Media T-P", "mat_media_tp")
+  ), "Por nivel")
+}
+
+filas_matricula_adultos <- function(e) {
+  filas_nivel(e, list(
+    c("Básica", "mat_basica_adultos"),
+    c("Media H-C", "mat_media_hc_adultos"),
+    c("Media T-P", "mat_media_tp_adultos")
+  ), "Por nivel")
+}
+
+# Marca de educación de adultos. Dos intensidades: el establecimiento que
+# además tiene régimen regular, y el que es íntegramente de adultos.
+marca_adultos <- function(e) {
+  ad <- cmp(e, "mat_adultos")
+  if (is.na(ad) || ad <= 0) return("")
+  solo <- isTRUE(cmp(e, "solo_adultos"))
+  paste0(
+    "<p class='marca-adultos", if (solo) " solo" else "", "'>",
+    if (solo) {
+      "Establecimiento de educación de adultos: toda su matrícula corresponde a nivelación de estudios para personas adultas."
+    } else {
+      paste0("Imparte además educación de adultos: ", f0(ad),
+             " estudiantes en nivelación de estudios.")
+    },
+    "</p>"
+  )
+}
+
+# Barra de estándares de aprendizaje: insuficiente / elemental / adecuado
+barra_std <- function(ins, ade) {
+  if (is.na(ins) || is.na(ade)) return("")
+  ele <- max(0, 100 - ins - ade)
+  trozo <- function(ancho, clase) {
+    if (is.na(ancho) || ancho <= 0) return("")
+    paste0("<span class='", clase, "' style='width:", pc(ancho), "%'></span>")
+  }
+  paste0("<div class='std-barra'>",
+         trozo(ins, "std-ins"), trozo(ele, "std-ele"), trozo(ade, "std-ade"),
+         "</div>")
+}
+
+# Una asignatura de un grado: puntaje, n y barra de estándares
+linea_asignatura <- function(etiqueta, puntaje, n, ins = NA, ade = NA) {
+  if (is.na(puntaje)) return("")
+  detalle <- paste0(f0(puntaje), " pts")
+  if (!is.na(n)) detalle <- paste0(detalle, " · ", f0(n), " estudiantes")
+  paste0("<div class='std'><div class='std-et'><b>", etiqueta, "</b> · ",
+         detalle, "</div>", barra_std(ins, ade), "</div>")
+}
+
+# Un grado completo. Devuelve "" si el establecimiento no rinde ese grado.
+bloque_grado <- function(e, suf) {
+  campo <- function(p) cmp(e, paste0(p, "_", suf))
+  n_l <- campo("n_lect"); n_m <- campo("n_mate")
+  p_l <- campo("prom_lect"); p_m <- campo("prom_mate")
+  marca_l <- campo("marca_lect"); marca_m <- campo("marca_mate")
+
+  if (all(is.na(c(n_l, n_m, p_l, p_m, marca_l, marca_m)))) return("")
+
+  gse <- cmp(e, paste0("gse_", suf, "_etq"))
+  encabezado <- paste0(
+    "<div class='grado-tit'><b>", GRADOS_SIMCE[[suf]], "</b><small>",
+    if (is.na(gse)) "" else paste0("Grupo socioeconómico: ", htmlEscape(gse)),
+    "</small></div>"
+  )
+
+  cuerpo <- paste0(
+    linea_asignatura("Lectura", p_l, n_l, campo("pct_ins_lect"), campo("pct_ade_lect")),
+    linea_asignatura("Matemática", p_m, n_m, campo("pct_ins_mate"), campo("pct_ade_mate")),
+    if (suf == "8b") linea_asignatura("Historia", campo("prom_hist"), campo("n_hist")) else ""
+  )
+
+  # Si no hay ningún puntaje, se explica por qué en lugar de dejarlo en blanco
+  if (cuerpo == "") {
+    codigo <- as.character(coalesce(marca_l, marca_m))
+    texto <- if (!is.na(codigo) && codigo %in% names(MARCAS_SIMCE)) {
+      MARCAS_SIMCE[[codigo]]
+    } else {
+      "Sin puntaje publicado para este grado."
+    }
+    cuerpo <- paste0("<p class='grado-nota'>", texto, "</p>")
+  }
+
+  paste0("<div class='grado'>", encabezado, cuerpo, "</div>")
+}
+
+# Desvinculación de la COMUNA del establecimiento. MINEDUC no la publica por
+# RBD, así que el bloque se distingue a la vista del resto de la ficha y dice
+# que es un dato general de la comuna, para que no se lea como de la escuela.
+bloque_desvinculacion <- function(e) {
+  tg <- cmp(e, "desv_global_tasa")
+  tr <- cmp(e, "desv_regular_tasa")
+  if (is.na(tg) && is.na(tr)) return("")
+  anio <- cmp(e, "desv_anio")
+  # La nota dice en qué se diferencian las dos medidas; el conteo va en una
+  # segunda línea y no junto a la tasa, donde se partía en dos.
+  nota_n <- function(texto, n, base) {
+    if (is.na(n) || is.na(base)) texto
+    else paste0(texto, "<br>", f0(n), " de ", f0(base), " estudiantes de la comuna")
+  }
+  paste0(
+    "<div class='fila-bloque bloque-comuna'>",
+    "<div class='et'>Desvinculación ", anio, "</div>",
+    "<p class='comuna-marca'>Dato general de los establecimientos de la comuna de <b>",
+    htmlEscape(cmp(e, "comuna")), "</b></p>",
+    "<dl>",
+    fila("Global", ov(fp(tg)),
+         nota = nota_n("No se matricularon al año siguiente",
+                       cmp(e, "desv_global_n"), cmp(e, "desv_global_mat_teorica"))),
+    fila("Sistema regular", ov(fp(tr)),
+         nota = nota_n("No se matricularon o se pasaron a educación de adultos",
+                       cmp(e, "desv_regular_n"), cmp(e, "desv_regular_mat_teorica"))),
+    "</dl>",
+    "</div>"
+  )
+}
+
+# ---- Ficha detallada (panel lateral) -----------------------------------------
+# Recibe la fila completa: pmap pasa cada columna como argumento con nombre.
+
+ficha_html <- function(...) {
+  e <- list(...)
+
+  mat_total <- cmp(e, "matricula")
+  mat_ad <- cmp(e, "mat_adultos")
+  hay_ad <- !is.na(mat_ad) && mat_ad > 0
+  n_base    <- cmp(e, "n_base_rendimiento")
+  n_trasl   <- cmp(e, "n_trasladados")
+  comb      <- cmp(e, "cursos_combinados")
+  simples   <- cmp(e, "cursos_simples")
+
+  cursos <- if (is.na(simples) && is.na(comb)) {
+    na_html
+  } else {
+    total_cursos <- sum(c(simples, comb), na.rm = TRUE)
+    paste0(f0(total_cursos),
+           if (!is.na(comb) && comb > 0) menor(paste0("(", f0(comb), " combinados)")) else "")
+  }
+
+  simce <- paste0(map_chr(names(GRADOS_SIMCE), function(s) bloque_grado(e, s)),
+                  collapse = "")
+
+  paste0(
+    "<div class='ficha-cab' style='--c:", cmp(e, "color"), "'><h2>",
+    htmlEscape(cmp(e, "establecimiento")), "</h2>", marca_adultos(e), "</div>",
+
+    seccion(
+      "Información general",
+      "<dl>",
+      fila("Comuna", val(cmp(e, "comuna"))),
+      fila("RBD", val(cmp(e, "rbd_txt"))),
+      fila("Ruralidad", condicion_html(cmp(e, "ruralidad"), cmp(e, "color"))),
+      fila("Cursos", cursos,
+           nota = if (!is.na(comb) && comb > 0) "Combinados: más de un nivel en la misma sala" else NULL),
+      "</dl>",
+      bloque("Niveles que imparte", chips_niveles(cmp(e, "niveles_oficiales"))),
+      if (!hay_ad) "" else bloque(
+        "Niveles en educación de adultos",
+        chips_niveles(cmp(e, "niveles_adultos"), NIVELES_AD,
+                      vacio = "Sin niveles informados en modalidad adultos",
+                      apagado = "no imparte este nivel en modalidad adultos")
+      )
+    ),
+
+    seccion(
+      "Matrícula 2026",
+      "<dl>",
+      fila("Total", ov(f0(mat_total)), clase = "num-grande"),
+      "</dl>",
+      if (is.na(mat_total)) "" else bloque(
+        if (hay_ad) "Niños y jóvenes, por nivel" else "Por nivel",
+        "<dl>", filas_matricula(e), "</dl>"),
+      if (is.na(mat_total) || !hay_ad) "" else bloque(
+        "Educación de adultos, por nivel",
+        "<dl>", filas_matricula_adultos(e), "</dl>",
+        "<p class='ficha-aviso'>Nivelación de estudios para personas adultas. ",
+        "MINEDUC la cuenta aparte del nivel regular: el total de arriba ",
+        "incluye las dos modalidades, y los niveles no se suman entre sí.</p>"),
+      if (is.na(mat_total)) "" else bloque(
+        "Composición", "<dl>",
+        fila("Mujeres", parte_de(cmp(e, "mat_mujeres"), mat_total)),
+        fila("Hombres", parte_de(cmp(e, "mat_hombres"), mat_total)),
+        fila("Extranjeros", parte_de(cmp(e, "mat_extranjeros"), mat_total)),
+        if (!hay_ad) "" else fila("Educación de adultos",
+                                  parte_de(mat_ad, mat_total),
+                                  nota = "Ya desglosada arriba, no se suma"),
+        "</dl>"
+      ),
+      "<p class='ficha-aviso'>Resumen de Matrícula Oficial 2026 (MINEDUC), ",
+      "con corte al 30 de abril de 2026.</p>"
+    ),
+
+    seccion(
+      "Vulnerabilidad",
+      "<dl>",
+      fila("Índice de Vulnerabilidad Escolar (IVE)", ov(fp(cmp(e, "ive"))),
+           nota = "Alumnos del grupo prioritario"),
+      "</dl>",
+      # El desglose de prioridades solo aparece si hay algún dato: un bloque
+      # con tres "Sin información" no informa nada.
+      if (any(!is.na(c(cmp(e, "ive_prioridad_a"), cmp(e, "ive_prioridad_b"),
+                       cmp(e, "ive_prioridad_c"))))) {
+        bloque(
+          "Prioridad acumulada", "<dl>",
+          fila("Prioridad A", ov(fp(cmp(e, "ive_prioridad_a")))),
+          fila("Prioridad B", ov(fp(cmp(e, "ive_prioridad_b")))),
+          fila("Prioridad C", ov(fp(cmp(e, "ive_prioridad_c")))),
+          "</dl>"
+        )
+      } else "",
+      if (!is.na(cmp(e, "tipo_ensenanza_ivm"))) {
+        bloque("Índice de Vulnerabilidad Multidimensional (IVM), por ciclo",
+               "<dl>", filas_ivm(e), "</dl>")
+      } else "",
+      # El aviso solo explica lo que la ficha efectivamente muestra, y
+      # desaparece por completo cuando no hay nada que explicar
+      local({
+        notas <- c(
+          if (any(!is.na(c(cmp(e, "ive_prioridad_a"), cmp(e, "ive_prioridad_b"),
+                           cmp(e, "ive_prioridad_c"))))) {
+            "Las prioridades del IVE son acumuladas: A está contenida en B, y B en C."
+          },
+          if (!is.na(cmp(e, "tipo_ensenanza_ivm"))) {
+            paste0("Un valor mayor del IVM indica mayor concentración ",
+                   "de factores de riesgo.")
+          }
+        )
+        if (length(notas) == 0) "" else
+          paste0("<p class='ficha-aviso'>", paste(notas, collapse = " "), "</p>")
+      })
+    ),
+
+    seccion(
+      "Trayectorias 2025",
+      "<dl>",
+      fila("Asistencia", ov(fp(cmp(e, "tasa_asistencia"))),
+           nota = "Días asistidos sobre días trabajados", clase = "num-grande"),
+      fila("Ausentismo crónico", ov(fp(cmp(e, "pct_ausentismo_cronico"))),
+           nota = "Alumnos que asisten a menos del 85% de los días"),
+      fila("Asistencia esperada", ov(fp(cmp(e, "pct_asistencia_esperada"))),
+           nota = "Alumnos que asisten al 90% o más"),
+      "</dl>",
+      bloque_desvinculacion(e),
+      bloque(
+        "Resultado del año", "<dl>",
+        fila("Aprobación", ov(fp(cmp(e, "tasa_aprobacion")))),
+        fila("Reprobación", ov(fp(cmp(e, "tasa_reprobacion")))),
+        fila("Retiro", ov(fp(cmp(e, "tasa_retiro"))), nota = "No incluye traslados"),
+        fila("Promedio general", ov(f1(cmp(e, "promedio_general")))),
+        "</dl>"
+      ),
+      if (is.na(n_base)) "" else paste0(
+        "<p class='ficha-aviso'>Sobre ", f0(n_base),
+        " estudiantes que aprobaron, reprobaron o se retiraron en 2025; las tres ",
+        "tasas suman 100%.",
+        if (!is.na(n_trasl) && n_trasl > 0) paste0(
+          " No se cuentan ", f0(n_trasl), if (n_trasl == 1) " traslado" else " traslados",
+          ", que cierran el año en otro curso o establecimiento.") else "",
+        "</p>"
+      )
+    ),
+
+    seccion(
+      "Resultados educativos",
+      if (simce == "") {
+        "<p class='grado-nota'>El establecimiento no rinde los grados evaluados por el SIMCE 2025.</p>"
+      } else {
+        paste0(
+          simce,
+          # Sin barras no hay nada que leer en la leyenda
+          if (grepl("std-barra", simce, fixed = TRUE)) {
+            paste0(
+              "<div class='std-leyenda'>",
+              "<span><i class='std-ins'></i>Insuficiente</span>",
+              "<span><i class='std-ele'></i>Elemental</span>",
+              "<span><i class='std-ade'></i>Adecuado</span>",
+              "</div>"
+            )
+          } else ""
+        )
+      },
+      "<dl>",
+      fila("Indicadores de Desarrollo Personal y Social (IDPS)", pend),
+      "</dl>"
+    ),
+
+    "<p class='ficha-nota'>Matrícula 2026. Vulnerabilidad 2026. ",
+    "Asistencia y rendimiento 2025. ",
+    if (is.na(cmp(e, "desv_anio"))) "" else
+      paste0("Desvinculación ", cmp(e, "desv_anio"), ", por comuna. "),
+    "SIMCE 2025.</p>"
+  )
+}
+
+# ---- Tarjeta al pasar el cursor ---------------------------------------------
+
+tooltip_html <- function(establecimiento, comuna, rbd_txt, ruralidad, color, mat_txt,
+                         solo_adultos = FALSE) {
+  paste0(
+    "<div class='tt' style='--c:", color, "'>",
+    "<div class='tt-nombre'>", htmlEscape(establecimiento), "</div>",
+    # Los establecimientos de pura nivelación de adultos se avisan acá: si no,
+    # habría que abrir la ficha para notar que no son una escuela regular.
+    if (isTRUE(solo_adultos)) "<div class='tt-adultos'>Educación de adultos</div>" else "",
+    "<div class='tt-datos'>",
+    "<div class='tt-dato'><span>Comuna</span><b>", val(comuna), "</b></div>",
+    "<div class='tt-dato'><span>RBD</span><b>", val(rbd_txt), "</b></div>",
+    "<div class='tt-dato'><span>Matrícula</span><b class='grande'>", val(mat_txt), "</b></div>",
+    "<div class='tt-dato'><span>Ruralidad</span><b>", condicion_html(ruralidad, color), "</b></div>",
+    "</div>",
+    "<div class='tt-pista'>Haz clic para ver la ficha completa</div>",
+    "</div>"
+  )
+}
+
+datos_mapa <- datos_mapa |>
+  mutate(
+    categoria = factor(
+      coalesce(na_if(str_trim(as.character(ruralidad)), ""), "Sin información"),
+      levels = niveles
+    ),
+    color = unname(colores[as.character(categoria)]),
+    # Tamaño del punto: tramo de matrícula. Ver TRAMOS, más arriba.
+    radio = map_dbl(matricula, radio_de_tramo),
+    tramo = map_chr(matricula, etiqueta_de_tramo),
+    mat_txt = if_else(is.na(matricula), NA_character_, f0(matricula)),
+    rbd_txt = if_else(is.na(rbd), NA_character_, as.character(as.integer(rbd)))
+  ) |>
+  arrange(desc(radio)) |>
+  mutate(idx = as.character(row_number()))
+
+datos_mapa <- datos_mapa |>
+  mutate(
+    ficha = pmap_chr(datos_mapa, ficha_html),
+    tooltip = pmap_chr(
+      list(establecimiento, comuna, rbd_txt, ruralidad, color, mat_txt,
+           solo_adultos),
+      tooltip_html
+    )
+  )
+
+# ---- Leyenda integrada como control del mapa ---------------------------------
+n_cat <- table(factor(datos_mapa$categoria, levels = niveles))
+# Solo se listan las categorías presentes en el mapa
+cat_visibles <- niveles[as.integer(n_cat[niveles]) > 0]
+
+item_leyenda <- function(color, texto) {
+  paste0(
+    "<span class='leyenda-item'>",
+    "<span class='leyenda-color' style='background:", color, "'></span>",
+    "<span>", htmlEscape(texto), "</span>",
+    "</span>"
+  )
+}
+
+# Conteo por tramo para la leyenda. A diferencia de la leyenda de ruralidad, que
+# solo lista las categorías presentes, la escala de tamaños se lista completa:
+# los saltos entre tamaños solo se entienden viendo la escala entera.
+conteo_tramos <- TRAMOS |>
+  mutate(establecimientos = map2_int(
+    desde, hasta,
+    ~ sum(datos_mapa$matricula >= .x & datos_mapa$matricula <= .y, na.rm = TRUE)
+  ))
+
+# Un peldaño de la escala de tamaños. El diámetro sale del mismo `radio` que usa
+# el marcador del mapa, leído de la misma tabla: leyenda y mapa no pueden divergir.
+item_tramo <- function(etiqueta, radio, establecimientos, ...) {
+  d <- radio * 2
+  paste0(
+    "<span class='leyenda-escala'>",
+    "<span class='circulo-caja'><i class='circulo-escala' style='width:", d,
+    "px;height:", d, "px'></i></span>",
+    "<span class='escala-etq'>", htmlEscape(etiqueta),
+    " <span class='escala-n'>(", establecimientos, ")</span></span>",
+    "</span>"
+  )
+}
+
+# ---- Índice de búsqueda ------------------------------------------------------
+# Cubre los 84 establecimientos, no solo los 72 del mapa: los 12 sin coordenadas
+# se pueden buscar igual y el buscador los marca como tales.
+# Se pasa a JavaScript como arreglos paralelos, igual que `ids` y `fichas`, para
+# no depender de cómo htmlwidgets serializa una lista de objetos de un elemento.
+indice_df <- bind_rows(
+  datos_mapa |> select(establecimiento, comuna, rbd, idx) |> mutate(enMapa = TRUE),
+  sin_coord  |> select(establecimiento, comuna, rbd) |> mutate(idx = "", enMapa = FALSE)
+) |>
+  transmute(
+    nombre = establecimiento,
+    comuna = coalesce(as.character(comuna), ""),
+    rbd    = if_else(is.na(rbd), "", as.character(as.integer(rbd))),
+    idx    = idx,
+    enMapa = enMapa
+  ) |>
+  arrange(nombre)
+
+leyenda <- paste0(
+  "<div class='leyenda-mapa' role='group' aria-label='Leyenda del mapa'>",
+  "<div class='leyenda-titulo'>Ruralidad</div>",
+  "<div class='leyenda-categorias'>",
+  paste0(
+    map2_chr(
+      unname(colores[cat_visibles]),
+      paste0(cat_visibles, " (", as.integer(n_cat[cat_visibles]), ")"),
+      item_leyenda
+    ),
+    collapse = ""
+  ),
+  "</div>",
+  "<div class='leyenda-divisor'></div>",
+  "<div class='leyenda-titulo'>Matrícula (alumnos)</div>",
+  "<div class='leyenda-matricula'>",
+  paste0(pmap_chr(conteo_tramos, item_tramo), collapse = ""),
+  "</div>",
+  "</div>"
+)
+
+# ---- Cifras del encabezado -----------------------------------------------------
+n_est     <- nrow(datos)
+n_mapa    <- nrow(datos_mapa)
+n_comunas <- n_distinct(datos$comuna)
+mat_total <- sum(datos$matricula, na.rm = TRUE)
+n_con_mat <- sum(!is.na(datos$matricula))
+
+# JavaScript del panel lateral (assets/visor.js)
+js_visor <- paste(readLines("assets/visor.js", warn = FALSE, encoding = "UTF-8"),
+                  collapse = "\n")
+```
+
+```{r}
+#| label: control-radio
+#| include: false
+
+# Los tramos tienen que cubrir a todos, sin huecos ni solapes, y el radio tiene
+# que crecer con el tramo. Si algo de esto falla, el render se detiene acá en vez
+# de publicar un mapa cuyo tamaño de punto no significa lo que dice la leyenda.
+n_tr <- nrow(TRAMOS)
+stopifnot(
+  "el radio no puede ser NA" = !any(is.na(datos_mapa$radio)),
+  "todo radio debe ser uno de los declarados" =
+    all(datos_mapa$radio %in% c(TRAMOS$radio, RADIO_SIN_DATO)),
+  "los tramos no pueden dejar huecos ni solaparse" =
+    all(TRAMOS$desde[-1] == TRAMOS$hasta[-n_tr] + 1),
+  "el primer tramo debe partir en 0" = TRAMOS$desde[1] == 0,
+  "el ultimo tramo debe quedar abierto" = is.infinite(TRAMOS$hasta[n_tr]),
+  "el radio debe crecer con el tramo" = all(diff(TRAMOS$radio) > 0)
+)
+
+stopifnot(
+  "la leyenda debe listar todos los tramos" = nrow(conteo_tramos) == nrow(TRAMOS),
+  "los conteos de la leyenda deben sumar los del mapa" =
+    sum(conteo_tramos$establecimientos) == sum(!is.na(datos_mapa$matricula)),
+  "los radios de la leyenda deben ser los del mapa" =
+    identical(conteo_tramos$radio, TRAMOS$radio),
+  "el indice de busqueda debe cubrir toda la base" = nrow(indice_df) == nrow(datos),
+  "el indice no puede traer nombres vacios" = all(nzchar(indice_df$nombre)),
+  "las filas del mapa deben traer idx" =
+    all(nzchar(indice_df$idx[indice_df$enMapa])),
+  "las filas sin coordenadas no deben traer idx" =
+    all(indice_df$idx[!indice_df$enMapa] == ""),
+  "los homonimos deben distinguirse por comuna y RBD" =
+    !any(duplicated(paste(indice_df$nombre, indice_df$comuna, indice_df$rbd)))
+)
+
+# Reparto observado, que la leyenda debe reproducir
+datos_mapa |> count(tramo, radio, name = "establecimientos") |> arrange(radio)
+```
+
+```{r}
+#| label: cabecera
+#| output: asis
+
+cat(paste0(
+  "<header class='visor-cabecera'>",
+  "<div class='cab-texto'>",
+  "<p class='cab-marca'>Visor geográfico</p>",
+  "<h1>Establecimientos del SLEP Maule Costa</h1>",
+  "<p class='cab-descripcion'>Dónde están los establecimientos del territorio y cómo se ",
+  "caracterizan: matrícula, vulnerabilidad, trayectorias y resultados educativos. ",
+  "De los ", f0(n_est), " establecimientos, ", f0(n_mapa),
+  " tienen coordenadas y aparecen en el mapa.</p>",
+  "<p class='cab-aviso'>Elaboración independiente con datos públicos. ",
+  "No es una publicación oficial del SLEP Maule Costa.</p>",
+  "</div>",
+  "<ul class='cab-cifras'>",
+  "<li><span class='cifra'>", f0(n_est), "</span><span class='cifra-etq'>establecimientos</span></li>",
+  "<li><span class='cifra'>", n_comunas, "</span><span class='cifra-etq'>comunas</span></li>",
+  "<li><span class='cifra'>", f0(mat_total), "</span><span class='cifra-etq'>matrícula total</span></li>",
+  "</ul>",
+  "</header>"
+))
+```
+
+<p class="guia-uso">Busca un establecimiento por su nombre o su RBD, o pasa el
+cursor sobre un punto para ver un resumen. Haz clic en el punto para abrir su
+ficha completa; la tecla Esc la cierra. El botón bajo el zoom agranda el mapa
+a pantalla completa.</p>
+
+::: marco-mapa
+```{r}
+#| label: mapa
+
+pal <- colorFactor(palette = unname(colores), levels = niveles)
+
+# El alto lo fija assets/visor.css sobre .marco-mapa .leaflet-container, con
+# clamp(), para que el mapa crezca con la ventana en vez de quedar en 640 px.
+mapa <- leaflet(datos_mapa, width = "100%") |>
+  # Mapa base de Esri (gris claro, sin clave de API): carga al abrir el HTML desde un archivo local.
+  # OpenStreetMap bloquea las teselas fuera de un sitio web y CARTO ahora exige clave.
+  addProviderTiles(
+    providers$Esri.WorldGrayCanvas,
+    options = providerTileOptions(maxNativeZoom = 16, maxZoom = 18)
+  ) |>
+  # Nombres de lugares sobre el mapa base
+  addTiles(
+    urlTemplate = "https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Light_Gray_Reference/MapServer/tile/{z}/{y}/{x}",
+    attribution = "",
+    options = tileOptions(maxNativeZoom = 16, maxZoom = 18)
+  ) |>
+  addCircleMarkers(
+    lng = ~lon,
+    lat = ~lat,
+    layerId = ~idx,
+    radius = ~radio,
+    fillColor = ~pal(categoria),
+    fillOpacity = 0.85,
+    color = "white",
+    weight = 1.2,
+    opacity = 1,
+    label = lapply(datos_mapa$tooltip, HTML),
+    labelOptions = labelOptions(
+      textsize = "13px",
+      direction = "auto",
+      className = "tt-leaflet"
+    )
+  ) |>
+  addScaleBar(
+    position = "bottomleft",
+    options = scaleBarOptions(imperial = FALSE)
+  ) |>
+  addControl(
+    html = HTML(leyenda),
+    position = "bottomleft",
+    className = "legend-control"
+  )
+
+onRender(
+  mapa,
+  js_visor,
+  data = list(
+    ids     = datos_mapa$idx,
+    fichas  = datos_mapa$ficha,
+    nombres = datos_mapa$establecimiento,
+    busqueda = list(
+      nombre = indice_df$nombre,
+      comuna = indice_df$comuna,
+      rbd    = indice_df$rbd,
+      idx    = indice_df$idx,
+      enMapa = indice_df$enMapa
+    )
+  )
+)
+```
+:::
+
+```{r}
+#| label: sin-ubicacion
+#| output: asis
+
+if (n_excl > 0) {
+  filas <- sin_coord |>
+    arrange(comuna, establecimiento) |>
+    mutate(
+      fila = paste0(
+        "<tr><td>", htmlEscape(establecimiento), "</td><td>", htmlEscape(comuna),
+        "</td><td>", val(if_else(is.na(rbd), NA_character_, as.character(as.integer(rbd)))),
+        "</td></tr>"
+      )
+    ) |>
+    pull(fila)
+
+  cat(paste0(
+    "<details class='sin-ubicacion'>",
+    "<summary>Establecimientos sin ubicación en el mapa (", n_excl, ")</summary>",
+    "<div class='su-cuerpo'>",
+    "<p>La base no incluye sus coordenadas, por eso no aparecen como puntos. ",
+    "Tampoco tienen RBD, de modo que no es posible asociarles indicadores ",
+    "de matrícula, vulnerabilidad, asistencia, rendimiento ni SIMCE.</p>",
+    "<table><thead><tr><th scope='col'>Establecimiento</th><th scope='col'>Comuna</th>",
+    "<th scope='col'>RBD</th></tr></thead><tbody>",
+    paste(filas, collapse = ""),
+    "</tbody></table></div></details>"
+  ))
+}
+```
+
+```{r}
+#| label: pie
+#| output: asis
+
+cat(paste0(
+  "<div class='pie-visor'>",
+  "<p><b>Nota.</b> El mapa muestra los ", f0(n_mapa),
+  " establecimientos con coordenadas disponibles. La matrícula total considera los ",
+  n_con_mat, " establecimientos con dato de matrícula oficial. ",
+  "La llave que une todas las fuentes es el RBD.</p>",
+  "<p><b>Fuentes.</b> Base de establecimientos del SLEP Maule Costa; ",
+  "MINEDUC, Resumen de Matrícula Oficial 2026, Asistencia anual 2025 y ",
+  "Rendimiento por estudiante 2025; JUNAEB, IVE 2026 e IVM 2026; ",
+  "Agencia de Calidad de la Educación, SIMCE 2025.</p>",
+  "<p><b>Carácter de esta publicación.</b> Este visor es una elaboración ",
+  "independiente a partir de datos públicos. No es una publicación oficial ",
+  "del SLEP Maule Costa ni de las instituciones citadas como fuente, y no ",
+  "representa su posición. Las cifras oficiales son las que publica cada ",
+  "institución.</p>",
+  "<p>Elaboración: Alonso Cotal, noviembre de 2026.</p>",
+  "</div>"
+))
+```

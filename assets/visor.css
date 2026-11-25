@@ -1,0 +1,703 @@
+/* ==========================================================================
+   Visor geográfico · SLEP Maule Costa
+   Identidad: costa del Maule. Mar profundo, niebla, arena y alga.
+   Una sola tipografía incrustada (no requiere conexión): Public Sans.
+   ========================================================================== */
+
+@font-face {
+  font-family: "Public Sans";
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+  src: url("fonts/public-sans-latin-400-normal.woff2") format("woff2");
+}
+@font-face {
+  font-family: "Public Sans";
+  font-weight: 600 700;
+  font-style: normal;
+  font-display: swap;
+  src: url("fonts/public-sans-latin-600-normal.woff2") format("woff2");
+}
+
+:root {
+  --marea: #0e3a47;      /* mar profundo: encabezado, títulos */
+  --marea-2: #1b5566;    /* variante para bordes sobre fondo oscuro */
+  --niebla: #f1f4f4;     /* fondo de la página */
+  --espuma: #ffffff;     /* superficies */
+  --alga: #2f6b5c;       /* foco e interacción */
+  --arena: #d8cdb8;      /* detalles cálidos sobre fondo oscuro */
+  --grafito: #22333a;    /* texto */
+  --suave: #566870;      /* texto secundario (contraste AA sobre blanco) */
+  --linea: #d5dddf;      /* separadores */
+  --sombra: 0 4px 14px rgba(14, 58, 71, .12);  /* la unica del visor */
+  --sans: "Public Sans", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+}
+
+/* ---- Enlaces y foco ----------------------------------------------------- */
+/* Se declaran acá, no en el tema de Quarto: `theme: default` no trae colores de
+   marca, así que estos son los únicos acentos del documento. Sin colores nuevos. */
+a, a:visited { color: var(--marea); text-decoration-thickness: 1px; text-underline-offset: 2px; }
+a:hover, a:focus-visible { color: var(--alga); }
+:focus-visible { outline: 2px solid var(--alga); outline-offset: 2px; }
+
+/* Texto solo para lectores de pantalla. Lo define también el Bootstrap del
+   tema de Quarto; se declara acá para no depender de él. */
+.visually-hidden {
+  position: absolute !important;
+  width: 1px; height: 1px;
+  margin: -1px; padding: 0;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* ---- Página ------------------------------------------------------------ */
+html { scroll-behavior: smooth; }
+body {
+  background: var(--niebla);
+  color: var(--grafito);
+  font-family: var(--sans);
+  font-size: 17px;
+  line-height: 1.55;
+}
+#quarto-content, main.content { background: transparent; }
+/* El título visible es el del encabezado propio; el bloque de Quarto solo alimenta <title> */
+#title-block-header, header#title-block-header { display: none; }
+p, li { font-family: var(--sans); }
+
+/* ---- Encabezado --------------------------------------------------------- */
+.visor-cabecera {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  column-gap: 3rem;
+  align-items: end;
+  margin: 1.6rem 0 1.4rem;
+  padding: 4px 0 20px;
+  color: var(--grafito);
+  background: transparent;
+  border-bottom: 2px solid var(--marea);
+}
+.visor-cabecera .cab-texto { grid-column: 1; }
+.visor-cabecera .cab-marca {
+  margin: 0 0 10px;
+  color: var(--suave);
+  font-size: 12.5px;
+  font-weight: 600;
+  letter-spacing: .11em;
+  text-transform: uppercase;
+}
+.visor-cabecera h1 {
+  margin: 0;
+  max-width: 22ch;
+  color: var(--marea);
+  font-family: var(--sans);
+  font-size: 40px;
+  font-weight: 600;
+  line-height: 1.1;
+  letter-spacing: -.02em;
+}
+.visor-cabecera .cab-descripcion {
+  max-width: 64ch;
+  margin: 12px 0 0;
+  color: #3c4c53;
+  font-size: 16.5px;
+  line-height: 1.6;
+}
+.visor-cabecera .cab-aviso {
+  max-width: 64ch;
+  margin: 8px 0 0;
+  color: var(--suave);
+  font-size: 14px;
+  line-height: 1.5;
+}
+.visor-cabecera .cab-cifras {
+  grid-column: 2;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  margin: 0;
+  padding: 0 0 0 40px;
+  list-style: none;
+  border-left: 1px solid var(--linea);
+}
+.visor-cabecera .cab-cifras li {
+  display: flex;
+  flex-direction: column;
+  padding: 0;
+  margin: 0;
+  border: 0;
+}
+.visor-cabecera .cifra {
+  color: var(--marea);
+  font-family: var(--sans);
+  font-size: 31px;
+  font-weight: 600;
+  line-height: 1.1;
+  letter-spacing: -.025em;
+  font-variant-numeric: lining-nums tabular-nums;
+}
+.visor-cabecera .cifra-etq {
+  margin-top: .15rem;
+  color: var(--suave);
+  font-size: 12.5px;
+  font-weight: 600;
+  letter-spacing: .07em;
+  text-transform: uppercase;
+}
+
+.guia-uso {
+  margin: 0 0 .7rem;
+  color: var(--suave);
+  font-size: 15.5px;
+}
+
+
+/* ---- Marco del mapa ------------------------------------------------------ */
+.marco-mapa {
+  overflow: hidden;
+  margin: 0 0 1rem;
+  background: var(--espuma);
+  border: 1px solid var(--linea);
+}
+/* El alto va acá y no en leaflet(): clamp() deja crecer el mapa con la ventana.
+   `!important` porque htmlwidgets escribe un alto en línea en el contenedor.
+   La regla de 540 px de la consulta de 700 px está más abajo y gana sobre esta. */
+.marco-mapa .leaflet-container {
+  font-family: var(--sans);
+  background: #e7ecee;
+  height: clamp(420px, 62vh, 820px) !important;
+}
+.leaflet-interactive:focus-visible {
+  outline: 3px solid var(--marea);
+  outline-offset: 2px;
+}
+
+/* ---- Pantalla completa --------------------------------------------------- */
+/* El botón imita el control de zoom de Leaflet (30 px, mismo borde) y queda
+   justo debajo de él. */
+.control-pc .boton-pc {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  color: var(--grafito);
+  background: var(--espuma);
+  border: 0;
+  border-radius: 0;
+  cursor: pointer;
+}
+.control-pc .boton-pc:hover { background: var(--niebla); }
+.control-pc .boton-pc:focus-visible {
+  outline: 3px solid var(--marea);
+  outline-offset: 2px;
+}
+/* Con la API del navegador. La pseudoclase le gana en especificidad a las dos
+   reglas de alto con !important (la general y la de 700 px). */
+.marco-mapa .leaflet-container:fullscreen {
+  width: 100%;
+  height: 100% !important;
+}
+.marco-mapa .leaflet-container:-webkit-full-screen {
+  width: 100%;
+  height: 100% !important;
+}
+/* Simulada, donde no hay API (Safari en iPhone). dvh descuenta las barras del
+   navegador móvil; vh queda de respaldo. */
+.marco-mapa .leaflet-container.pantalla-completa-simulada {
+  position: fixed !important;
+  inset: 0;
+  z-index: 10000;
+  width: 100vw;
+  height: 100vh !important;
+  height: 100dvh !important;
+}
+html.visor-sin-scroll, html.visor-sin-scroll body { overflow: hidden; }
+
+/* Aviso cuando no carga el mapa base */
+.aviso-base {
+  position: absolute;
+  top: 10px;
+  left: 50%;
+  z-index: 900;
+  max-width: calc(100% - 140px);
+  padding: .4rem .8rem;
+  color: var(--grafito);
+  font-size: 13px;
+  background: #fff7e0;
+  border: 1px solid #e3cf97;
+  transform: translateX(-50%);
+}
+
+/* ---- Leyenda ----------------------------------------------------------- */
+.leaflet-control.legend-control {
+  margin: 0 0 8px 10px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+}
+.leyenda-mapa {
+  width: 244px;
+  max-width: calc(100vw - 56px);
+  padding: 13px 15px;
+  color: var(--grafito);
+  background: var(--espuma);
+  border: 1px solid var(--linea);
+  box-shadow: var(--sombra);
+  font-size: 14px;
+  line-height: 1.45;
+}
+.leyenda-titulo {
+  margin-bottom: 5px;
+  color: var(--suave);
+  font-size: 12.3px;
+  font-weight: 600;
+  letter-spacing: .1em;
+  text-transform: uppercase;
+}
+.leyenda-categorias { display: flex; flex-direction: column; gap: 7px; }
+.leyenda-item { display: flex; align-items: center; gap: 7px; }
+.leyenda-color {
+  display: inline-block;
+  flex: 0 0 11px;
+  width: 11px;
+  height: 11px;
+  border: 1px solid rgba(0, 0, 0, .12);
+  border-radius: 50%;
+}
+.leyenda-divisor { height: 1px; margin: 8px 0 7px; background: var(--linea); }
+/* Cinco tramos en columna: con etiquetas de rango («201 – 500») no caben en una
+   línea dentro del control del mapa. El diámetro de cada círculo lo escribe R
+   en línea, con el mismo radio que el marcador. */
+.leyenda-matricula { display: flex; flex-direction: column; gap: 3px; }
+.leyenda-escala {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  color: var(--suave);
+  font-size: 13px;
+}
+/* Caja de ancho fijo para que los cinco círculos queden centrados entre sí y
+   las etiquetas alineadas a la izquierda. 32px > el diámetro mayor (30px). */
+.circulo-caja {
+  flex: 0 0 32px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.escala-etq { font-variant-numeric: lining-nums tabular-nums; }
+/* El conteo hereda --suave del contenedor: los paréntesis ya lo separan de la
+   etiqueta y la paleta no necesita un gris más. */
+.escala-n { font-variant-numeric: lining-nums tabular-nums; }
+.circulo-escala {
+  display: block;
+  background: #8b9ba3;
+  border: 1px solid #fff;
+  border-radius: 50%;
+  box-shadow: 0 0 0 1px #71818a;
+}
+
+/* ---- Buscador ----------------------------------------------------------- */
+/* Vive dentro del contenedor de Leaflet, no en la página: así no choca con los
+   controles del mapa y el mapa sigue siendo la vista principal. `left: 52px`
+   libera el control de zoom; la leyenda queda abajo a la izquierda, lejos. */
+.buscador {
+  position: absolute;
+  top: 10px;
+  left: 52px;
+  z-index: 1001;           /* sobre los paneles (700) y controles (800) de Leaflet */
+  width: min(360px, calc(100% - 72px));
+  font-family: var(--sans);
+}
+.buscador-campo {
+  width: 100%;
+  padding: .5rem .7rem;
+  color: var(--grafito);
+  background: rgba(255, 255, 255, .97);
+  border: 1px solid var(--linea);
+  box-shadow: var(--sombra);
+  font-family: inherit;
+  font-size: 15px;
+}
+.buscador-campo::placeholder { color: var(--suave); }
+.buscador-lista {
+  margin: 4px 0 0;
+  padding: 0;
+  max-height: 46vh;
+  overflow-y: auto;
+  list-style: none;
+  background: var(--espuma);
+  border: 1px solid var(--linea);
+  box-shadow: var(--sombra);
+}
+.buscador-lista[hidden] { display: none; }
+.buscador-op {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding: .4rem .7rem;
+  border-bottom: 1px solid var(--niebla);
+  cursor: pointer;
+}
+.buscador-op:last-child { border-bottom: 0; }
+.buscador-op.resaltado,
+.buscador-op:hover { background: var(--niebla); }
+.buscador-op .op-nombre { color: var(--grafito); font-size: 15px; line-height: 1.3; }
+.buscador-op .op-meta {
+  color: var(--suave);
+  font-size: 12.5px;
+  font-variant-numeric: lining-nums tabular-nums;
+}
+.buscador-op.sin-mapa .op-nombre { color: var(--suave); }
+.buscador-vacio { padding: .55rem .7rem; color: var(--suave); font-size: 14px; }
+
+/* ---- Tarjeta al pasar el cursor ----------------------------------------- */
+.leaflet-tooltip.tt-leaflet {
+  width: 286px;
+  transition: opacity .12s linear;
+  padding: 0;
+  white-space: normal;
+  color: var(--grafito);
+  background: var(--espuma);
+  border: 1px solid var(--linea);
+  box-shadow: var(--sombra);
+}
+.tt { padding: 13px 15px; line-height: 1.35; }
+.tt-nombre {
+  font-family: var(--sans);
+  font-size: 17.5px;
+  font-weight: 600;
+  color: var(--marea);
+  line-height: 1.25;
+  letter-spacing: -.012em;
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+/* El color de la ruralidad ya no es un filete lateral: es un cuadrado del
+   tamaño del texto, que no compite con el borde recto de la tarjeta. */
+.tt-nombre::before {
+  content: "";
+  flex: 0 0 9px;
+  width: 9px;
+  height: 9px;
+  background: var(--c, #7f7f7f);
+  transform: translateY(-1px);
+}
+.tt-datos { display: grid; grid-template-columns: 1fr 1fr; gap: .45rem .9rem; margin: .6rem 0 .55rem; }
+.tt-dato > span { display: block; color: var(--suave); font-size: 12.5px; }
+.tt-dato b { font-size: 16.5px; font-weight: 600; font-variant-numeric: lining-nums tabular-nums; }
+.tt-dato b.grande { font-family: var(--sans); font-size: 25px; line-height: 1.1; letter-spacing: -.025em; }
+.tt-pista { padding-top: .45rem; border-top: 1px solid #e4e9ea; color: var(--suave); font-size: 13px; }
+/* Aviso de modalidad adultos en la tarjeta del cursor */
+.tt-adultos {
+  display: inline-block;
+  margin: .35rem 0 0;
+  padding: .06rem .5rem;
+  background: var(--arena);
+  color: var(--grafito);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+/* ---- Panel lateral con la ficha ---------------------------------------- */
+.ficha-panel {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 20px;            /* deja visible la atribución del mapa */
+  z-index: 1100;
+  display: flex;
+  flex-direction: column;
+  width: min(396px, 100%);
+  color: var(--grafito);
+  background: var(--espuma);
+  border-left: 1px solid var(--linea);
+  box-shadow: -6px 0 18px rgba(14, 58, 71, .12);
+  font-size: 17px;
+  line-height: 1.45;
+  cursor: auto;
+  visibility: hidden;
+  transform: translateX(100%);
+  transition: transform .2s ease-out, visibility 0s linear .2s;
+}
+.ficha-panel.abierta {
+  visibility: visible;
+  transform: none;
+  transition: transform .2s ease-out, visibility 0s;
+}
+.ficha-cerrar {
+  position: absolute;
+  top: .55rem;
+  right: .55rem;
+  z-index: 2;
+  width: 2.1rem;
+  height: 2.1rem;
+  padding: 0;
+  color: var(--marea);
+  font-size: 1.4rem;
+  line-height: 1;
+  background: var(--espuma);
+  border: 1px solid var(--linea);
+  cursor: pointer;
+}
+.ficha-cerrar:hover { background: var(--niebla); }
+.ficha-cerrar:focus-visible, .ficha-cuerpo:focus-visible { outline: 3px solid var(--alga); outline-offset: 2px; }
+.ficha-cuerpo { flex: 1 1 auto; overflow-y: auto; outline: none; overscroll-behavior: contain; }
+
+/* El color de la ruralidad pasa de un filete que cruza todo el panel a una
+   marca corta: sigue identificando al establecimiento sin competir con el
+   filete de 2 px que ahora separa cada sección. */
+.ficha-cab {
+  position: relative;
+  padding: 1.35rem 3.4rem 1rem 1.25rem;
+  background: var(--espuma);
+  border-bottom: 2px solid var(--marea);
+}
+.ficha-cab::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: 1.25rem;
+  width: 28px;
+  height: 4px;
+  background: var(--c, #7f7f7f);
+}
+.ficha-cab h2 {
+  margin: 0;
+  color: var(--marea);
+  font-family: var(--sans);
+  font-size: 23px;
+  font-weight: 600;
+  line-height: 1.22;
+  letter-spacing: -.018em;
+}
+.ficha-sec { padding: 1rem 1.25rem .85rem; border-bottom: 1px solid var(--linea); }
+.ficha-sec h3 {
+  margin: 0 0 13px;
+  padding-bottom: 8px;
+  color: var(--marea);
+  font-family: var(--sans);
+  font-size: 17px;
+  font-weight: 600;
+  letter-spacing: -.01em;
+  border-bottom: 2px solid var(--marea);
+}
+.ficha-sec dl { margin: 0; }
+.fila {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 7px 0;
+  border-bottom: 1px solid #e8eced;
+}
+.fila:last-child { border-bottom: 0; }
+.fila dt { margin: 0; color: var(--suave); font-size: 15.5px; font-weight: 400; }
+.fila dt small { display: block; color: var(--suave); font-size: 12.5px; }
+.fila dd { margin: 0; font-size: 16px; font-weight: 600; text-align: right; font-variant-numeric: lining-nums tabular-nums; }
+.fila dd.num-grande { font-family: var(--sans); font-size: 26px; letter-spacing: -.025em; }
+.fila dd.num-grande .sin-info { font-size: 16px; letter-spacing: 0; }
+.fila-bloque { margin-top: 17px; }
+.fila-bloque .et {
+  color: var(--suave);
+  font-size: 11.8px;
+  font-weight: 700;
+  letter-spacing: .13em;
+  text-transform: uppercase;
+  margin-bottom: 6px;
+}
+/* La sangría y el filete dicen «estas filas pertenecen al bloque de arriba»,
+   que es lo que el título por sí solo no alcanzaba a decir. */
+.fila-bloque dl {
+  padding-left: 12px;
+  border-left: 1px solid #e6ecec;
+}
+.fila-bloque dl .fila:first-child { padding-top: .25rem; }
+/* Desvinculación: es dato de la comuna, no del establecimiento. Se separa del
+   resto con fondo y filete arena (el mismo lenguaje de la marca de adultos)
+   para que no se lea como una cifra más de la escuela. */
+.bloque-comuna {
+  padding: 10px 12px 12px;
+  background: var(--niebla);
+  border-left: 3px solid var(--arena);
+}
+.bloque-comuna dl { border-left-color: var(--linea); }
+.bloque-comuna .comuna-marca {
+  margin: 0 0 6px;
+  color: var(--grafito);
+  font-size: 13.5px;
+}
+.cond { display: inline-flex; align-items: center; gap: .4rem; }
+.cond i { width: .7rem; height: .7rem; border-radius: 50%; background: var(--c); }
+.niveles { display: flex; flex-wrap: wrap; gap: .35rem; margin: .5rem 0 .1rem; }
+.nivel { padding: .12rem .6rem; font-size: 13.5px; }
+.nivel.on { color: #fff; background: var(--marea); }
+.nivel.off { color: var(--suave); background: #f2f5f5; }
+.pendiente {
+  display: inline-block;
+  padding: .08rem .6rem;
+  color: var(--suave);
+  font-size: 13px;
+  font-weight: 400;
+  white-space: nowrap;
+  background: #f2f5f5;
+}
+.sin-info { color: var(--suave); font-weight: 400; }
+.ficha-nota {
+  margin: 0;
+  padding: .85rem 1.25rem 1.1rem;
+  background: #fafbfb;
+  border-top: 1px solid #e6ecec;
+  color: var(--suave);
+  font-size: 13px;
+}
+.ficha-aviso {
+  margin: .7rem 0 0;
+  padding-left: 11px;
+  border-left: 2px solid var(--linea);
+  color: var(--suave);
+  font-size: 13px;
+  line-height: 1.4;
+}
+
+/* ---- Educación de adultos ----------------------------------------------- */
+/* El registro oficial cuenta la modalidad adultos aparte del nivel regular.
+   Esta marca evita que un establecimiento de nivelación se lea como escuela
+   regular. Sin colores nuevos: reusa --arena y --marea de la paleta. */
+.marca-adultos {
+  margin: .6rem 0 0;
+  padding: .4rem .65rem;
+  color: var(--suave);
+  font-size: 13px;
+  line-height: 1.35;
+  background: var(--niebla);
+  border-left: 3px solid var(--arena);
+}
+.marca-adultos.solo {
+  color: var(--grafito);
+  font-weight: 600;
+  border-left-color: var(--marea);
+}
+
+/* ---- Establecimientos sin ubicación ------------------------------------- */
+.sin-ubicacion {
+  margin: 0 0 1.1rem;
+  background: var(--espuma);
+  border: 1px solid var(--linea);
+}
+.sin-ubicacion summary {
+  padding: .8rem 1.1rem;
+  color: var(--marea);
+  font-size: 16.5px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.sin-ubicacion summary:focus-visible { outline: 3px solid var(--alga); outline-offset: -3px; }
+.sin-ubicacion .su-cuerpo { padding: 0 1.1rem 1rem; }
+.sin-ubicacion p { margin: 0 0 .6rem; color: var(--suave); font-size: 14.5px; }
+.sin-ubicacion table { width: 100%; border-collapse: collapse; font-size: 14.5px; }
+.sin-ubicacion th {
+  padding: .4rem .5rem;
+  color: var(--suave);
+  font-weight: 600;
+  text-align: left;
+  border-bottom: 1px solid var(--linea);
+}
+.sin-ubicacion td { padding: .4rem .5rem; border-bottom: 1px solid #e8eced; }
+
+/* ---- Notas y fuentes ---------------------------------------------------- */
+.pie-visor { margin: 0 0 2.5rem; color: var(--suave); font-size: 14.5px; line-height: 1.55; }
+.pie-visor p { margin: 0 0 .4rem; }
+
+/* ---- Responsive --------------------------------------------------------- */
+@media (max-width: 700px) {
+  .visor-cabecera { display: block; padding: 4px 0 16px; }
+  .visor-cabecera h1 { font-size: 28px; max-width: none; }
+  /* En fila, pero envolviendo: a 380 px las tres no caben, y con grid de tres
+     columnas la última quedaba cortada fuera de la pantalla. */
+  .visor-cabecera .cab-cifras {
+    flex-direction: row; flex-wrap: wrap; justify-content: start;
+    gap: 14px 1.6rem; margin: 18px 0 0; padding: 14px 0 0;
+    border-left: 0; border-top: 1px solid var(--linea);
+  }
+  .visor-cabecera .cab-cifras li { padding: 0; margin: 0; }
+  .visor-cabecera .cifra { font-size: 24px; }
+  .ficha-panel {
+    top: auto;
+    left: 0;
+    width: 100%;
+    height: 64%;
+    border-left: 0;
+    border-top: 1px solid var(--linea);
+    box-shadow: 0 -6px 18px rgba(14, 58, 71, .14);
+    transform: translateY(100%);
+  }
+  .ficha-panel.abierta { transform: none; }
+  .panel-abierto .legend-control { display: none; }
+  .marco-mapa .leaflet-container { height: 540px !important; }
+  .leyenda-mapa { width: 200px; padding: 10px 12px; font-size: 13px; }
+  .leyenda-escala { font-size: 12.5px; }
+  /* El campo toma el ancho útil; la lista se acorta para no quedar bajo el
+     teclado virtual, dejando espacio para al menos tres resultados. */
+  .buscador { left: 48px; width: calc(100% - 60px); top: 8px; }
+  .buscador-lista { max-height: 38vh; }
+}
+/* En pantallas táctiles no hay hover: el toque abre directamente la ficha */
+@media (hover: none) {
+  .leaflet-tooltip.tt-leaflet { display: none; }
+}
+@media (prefers-reduced-motion: reduce) {
+  html { scroll-behavior: auto; }
+  .ficha-panel, .ficha-panel.abierta { transition: none; }
+  .leaflet-tooltip.tt-leaflet { transition: none; }
+}
+
+/* ==========================================================================
+   Indicadores integrados (matrícula oficial, IVE, IVM, asistencia, SIMCE)
+   ========================================================================== */
+
+/* ---- Bloque por grado dentro de resultados educativos ------------------- */
+.grado { margin-top: .7rem; padding-top: .55rem; border-top: 1px solid #e6ecec; }
+.grado:first-of-type { margin-top: .25rem; padding-top: 0; border-top: 0; }
+.grado-tit {
+  display: flex; align-items: baseline; justify-content: space-between; gap: .5rem;
+  margin-bottom: .1rem;
+}
+.grado-tit b {
+  font-family: var(--sans); font-size: 14.5px; font-weight: 700;
+  color: var(--marea);
+}
+.grado-tit small { color: var(--suave); font-size: 12.5px; font-variant-numeric: tabular-nums; }
+.grado-nota {
+  margin: .4rem 0 0;
+  padding-left: 11px;
+  border-left: 2px solid var(--linea);
+  color: var(--suave);
+  font-size: 13px;
+  line-height: 1.35;
+}
+
+/* ---- Barra de estándares de aprendizaje -------------------------------- */
+.std { margin: .4rem 0 .15rem; }
+.std-et { color: var(--suave); font-size: 13.5px; margin-bottom: .2rem; }
+.std-barra {
+  display: flex; height: .6rem; overflow: hidden;
+  background: var(--niebla); border: 1px solid var(--linea);
+}
+.std-barra span { display: block; height: 100%; }
+.std-ins { background: #c3cfd3; }
+.std-ele { background: #6e97a1; }
+.std-ade { background: #0e3a47; }
+.std-leyenda {
+  display: flex; flex-wrap: wrap; gap: .1rem .85rem;
+  margin: .45rem 0 0; color: var(--suave); font-size: 12.5px;
+}
+.std-leyenda span { display: inline-flex; align-items: center; gap: .3rem; }
+.std-leyenda i { width: .62rem; height: .62rem; display: inline-block; }
+
+/* ---- Dato secundario junto al valor principal --------------------------- */
+.fila dd .menor { font-weight: 400; color: var(--suave); font-size: 13.5px; }
